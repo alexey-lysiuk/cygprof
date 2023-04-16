@@ -2,10 +2,16 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-//#include <time.h>
 #include <atomic>
 #include <chrono>
 #include <vector>
+
+struct CygHeader
+{
+	uint32_t magic;
+	uint32_t version;
+	uint64_t base;
+};
 
 struct CygEvent
 {
@@ -13,20 +19,17 @@ struct CygEvent
 	uint64_t stamp;
 };
 
-struct CygHeader
-{
-	uint32_t magic;
-	uint32_t version;
-	CygEvent base;
-};
-
 static std::atomic<bool> initialized;
 static std::vector<CygEvent> events;
-static uint64_t stamp;
+
+using namespace std::chrono;
+const auto start = steady_clock::now();
 
 static uint64_t GetStamp()
 {
-	return static_cast<uint64_t>(std::chrono::high_resolution_clock::now().time_since_epoch().count()) - stamp;
+	const auto delta = steady_clock::now() - start;
+	const auto nsstamp = duration_cast<nanoseconds>(delta).count();
+	return static_cast<uint64_t>(nsstamp);
 }
 
 static void Exit()
@@ -45,7 +48,7 @@ static void Exit()
 		return;
 	}
 
-	const CygHeader header = { 0xFFEEAAFF, 1, { stamp, 0x0 } }; // TODO: address
+	const CygHeader header = { 0xFFEEAAFF, 1, 0x0 }; // TODO: base address
 
 	if (fwrite(&header, sizeof header, 1, file) != 1)
 		fprintf(stderr, "ERROR: Failed to write header to file %s", filename);
@@ -63,8 +66,6 @@ static void Init()
 {
 	if (initialized.exchange(true))
 		return; // already initialized
-
-	stamp = GetStamp();
 
 	atexit(Exit);
 
