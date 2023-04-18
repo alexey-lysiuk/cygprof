@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -53,22 +54,26 @@ static void Exit()
 	}
 
 	std::unordered_map<void*, uint32_t> addresses;
-	std::vector<const char*> symbols;
-	symbols.push_back("?");
+	std::vector<std::string> symbols;
 
 	for (const CygEvent& event : events)
 	{
 		if (const auto found = addresses.find(event.address); addresses.end() == found)
 		{
+			addresses.emplace(event.address, uint32_t(symbols.size()));
+
 			Dl_info info = {};
 
 			if (dladdr(event.address, &info) > 0)
 			{
-				addresses.emplace(event.address, uint32_t(symbols.size()));
-				symbols.push_back(info.dli_sname);
+				symbols.emplace_back(info.dli_sname);
 			}
 			else
-				addresses.emplace(event.address, 0);
+			{
+				char buf[64];
+				snprintf(buf, sizeof buf, "%p", event.address);
+				symbols.emplace_back(buf);
+			}
 		}
 	}
 
@@ -77,9 +82,9 @@ static void Exit()
 	if (fwrite(&header, sizeof header, 1, file) != 1)
 		fprintf(stderr, "ERROR: Failed to write header to file %s", filename);
 
-	for (const char* const symbol : symbols)
+	for (const std::string& symbol : symbols)
 	{
-		const uint16_t length = uint16_t(strlen(symbol));
+		const uint16_t length = uint16_t(symbol.size());
 
 		if (fwrite(&length, sizeof length, 1, file) != 1)
 		{
@@ -87,7 +92,7 @@ static void Exit()
 			break;
 		}
 
-		if (fwrite(symbol, length, 1, file) != 1)
+		if (fwrite(&symbol[0], length, 1, file) != 1)
 		{
 			fprintf(stderr, "ERROR: Failed to write %hu bytes to file %s", length, filename);
 			break;
