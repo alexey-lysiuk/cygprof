@@ -2,20 +2,24 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+
 #include <atomic>
 #include <chrono>
+#include <unordered_map>
 #include <vector>
+
+#include <dlfcn.h>
 
 struct CygHeader
 {
 	uint32_t magic;
 	uint32_t version;
-	uint64_t base;
+	uint32_t symbols;
 };
 
 struct CygEvent
 {
-	uint64_t address;
+	void* address;
 	uint64_t stamp;
 };
 
@@ -48,15 +52,64 @@ static void Exit()
 		return;
 	}
 
-	const CygHeader header = { 0xFFEEAAFF, 1, 0x0 }; // TODO: base address
+	std::unordered_map<void*, uint32_t> addresses;
+	std::vector<const char*> symbols;
+	symbols.push_back("?");
+
+	for (const CygEvent& event : events)
+	{
+		if (const auto found = addresses.find(event.address); addresses.end() == found)
+		{
+			Dl_info info = {};
+
+			if (dladdr(event.address, &info) > 0)
+			{
+				addresses.emplace(event.address, uint32_t(symbols.size()));
+				symbols.push_back(info.dli_sname);
+			}
+			else
+				addresses.emplace(event.address, 0);
+		}
+	}
+
+	const CygHeader header = { 0xFFEEAAFF, 1, uint32_t(symbols.size()) };
 
 	if (fwrite(&header, sizeof header, 1, file) != 1)
 		fprintf(stderr, "ERROR: Failed to write header to file %s", filename);
 
-	const size_t bytes = events.size() * sizeof(CygEvent);
+	for (const char* const symbol : symbols)
+	{
+		const uint16_t length = uint16_t(strlen(symbol));
 
-	if (fwrite(&events[0], bytes, 1, file) != 1)
-		fprintf(stderr, "ERROR: Failed to write %zu bytes to file %s", bytes, filename);
+		if (fwrite(&length, sizeof length, 1, file) != 1)
+		{
+			fprintf(stderr, "ERROR: Failed to write header to file %s", filename);
+			break;
+		}
+
+		if (fwrite(symbol, length, 1, file) != 1)
+		{
+			fprintf(stderr, "ERROR: Failed to write %hu bytes to file %s", length, filename);
+			break;
+		}
+	}
+
+	for (const CygEvent& event : events)
+	{
+		const uint32_t index = addresses[event.address];
+
+		if (fwrite(&index, sizeof index, 1, file) != 1)
+		{
+			fprintf(stderr, "ERROR: Failed to write %zu bytes to file %s", sizeof index, filename);
+			break;
+		}
+
+		if (fwrite(&event.stamp, sizeof event.stamp, 1, file) != 1)
+		{
+			fprintf(stderr, "ERROR: Failed to write %zu bytes to file %s", sizeof event.stamp, filename);
+			break;
+		}
+	}
 
 	if (fclose(file) != 0)
 		fprintf(stderr, "ERROR: Failed to close file %s", filename);
@@ -88,14 +141,14 @@ static void FuncEnter(void* func, void* caller)
 {
 	Init();
 
-	events.push_back({ reinterpret_cast<uint64_t>(func), GetStamp() });
+	events.push_back({ func, GetStamp() });
 }
 
 static void FuncExit(void* func, void* caller)
 {
 	Init(); // ?
 
-	events.push_back({ reinterpret_cast<uint64_t>(func), GetStamp() });
+	events.push_back({ func, GetStamp() });
 }
 
 extern "C"
